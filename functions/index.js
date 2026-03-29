@@ -2,9 +2,31 @@ const admin = require("firebase-admin");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
+const { buildJobsheetData, buildInvoiceData } = require("./builders");
 
 admin.initializeApp();
 const db = admin.firestore();
+
+async function createIfMissing(docRef, data, logContext) {
+  const result = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(docRef);
+
+    if (snap.exists) {
+      return { created: false };
+    }
+
+    tx.set(docRef, data, { merge: false });
+    return { created: true };
+  });
+
+  if (result.created) {
+    logger.info("Document created", logContext);
+    return true;
+  }
+
+  logger.info("Document already exists, skipping", logContext);
+  return false;
+}
 
 /**
  * Estimate -> Jobsheet trigger
@@ -30,31 +52,13 @@ exports.onEstimateWritten = onDocumentWritten("estimates/{estimateId}", async (e
   }
 
   const jobsheetRef = db.collection("jobsheets").doc(estimateId);
-  const jobsheetSnap = await jobsheetRef.get();
-
-  if (jobsheetSnap.exists) {
-    logger.info("Jobsheet already exists, skipping", { estimateId, jobsheetId: estimateId });
-    return;
-  }
-
-  const jobsheetData = {
+  const jobsheetData = buildJobsheetData(
     estimateId,
-    companyId: afterData.companyId || null,
-    userId: afterData.userId || null,
-    contactId: afterData.contactId || null,
-    projectId: afterData.projectId || null,
-    status: "pending",
-    title: afterData.title || "",
-    description: afterData.description || "",
-    lineItems: Array.isArray(afterData.lineItems) ? afterData.lineItems : [],
-    total: afterData.total || 0,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    sourceUpdatedAt: afterData.updatedAt || null,
-  };
+    afterData,
+    admin.firestore.FieldValue.serverTimestamp(),
+  );
 
-  await jobsheetRef.set(jobsheetData, { merge: false });
-
-  logger.info("Jobsheet created from approved estimate", {
+  await createIfMissing(jobsheetRef, jobsheetData, {
     estimateId,
     jobsheetId: estimateId,
   });
@@ -84,31 +88,13 @@ exports.onJobsheetWritten = onDocumentWritten("jobsheets/{jobsheetId}", async (e
   }
 
   const invoiceRef = db.collection("invoices").doc(jobsheetId);
-  const invoiceSnap = await invoiceRef.get();
-
-  if (invoiceSnap.exists) {
-    logger.info("Invoice already exists, skipping", { jobsheetId, invoiceId: jobsheetId });
-    return;
-  }
-
-  const invoiceData = {
+  const invoiceData = buildInvoiceData(
     jobsheetId,
-    estimateId: afterData.estimateId || null,
-    companyId: afterData.companyId || null,
-    userId: afterData.userId || null,
-    contactId: afterData.contactId || null,
-    projectId: afterData.projectId || null,
-    status: "draft",
-    title: afterData.title || "",
-    lineItems: Array.isArray(afterData.lineItems) ? afterData.lineItems : [],
-    total: afterData.total || 0,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    sourceUpdatedAt: afterData.updatedAt || null,
-  };
+    afterData,
+    admin.firestore.FieldValue.serverTimestamp(),
+  );
 
-  await invoiceRef.set(invoiceData, { merge: false });
-
-  logger.info("Invoice created from completed jobsheet", {
+  await createIfMissing(invoiceRef, invoiceData, {
     jobsheetId,
     invoiceId: jobsheetId,
   });
